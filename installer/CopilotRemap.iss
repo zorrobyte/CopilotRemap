@@ -21,10 +21,11 @@ OutputBaseFilename=CopilotRemap-Setup
 Compression=lzma
 SolidCompression=yes
 PrivilegesRequired=lowest
-SetupIconFile=
 UninstallDisplayIcon={app}\{#MyAppExeName}
 WizardStyle=modern
 ArchitecturesInstallIn64BitMode=x64compatible
+CloseApplications=force
+CloseApplicationsFilter=*.exe
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
@@ -42,3 +43,30 @@ Name: "{userstartup}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: st
 
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "Launch CopilotRemap"; Flags: nowait postinstall skipifsilent
+
+[UninstallDelete]
+; Clean up the startup shortcut the app may have created via its own toggle
+Type: files; Name: "{userstartup}\CopilotRemap.lnk"
+; Clean up config directory
+Type: filesandordirs; Name: "{userappdata}\CopilotRemap"
+
+[Code]
+// Kill the running process before uninstall/upgrade
+procedure TaskKill(FileName: string);
+var
+  ResultCode: Integer;
+begin
+  Exec('taskkill.exe', '/F /IM ' + FileName, '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  if CurStep = ssInstall then
+    TaskKill('{#MyAppExeName}');
+end;
+
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+begin
+  if CurUninstallStep = usUninstall then
+    TaskKill('{#MyAppExeName}');
+end;
