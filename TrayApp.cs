@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace CopilotRemap;
 
@@ -8,10 +9,21 @@ public sealed class TrayApp : ApplicationContext
     private readonly NotifyIcon _trayIcon;
     private readonly KeyboardHook _hook;
     private readonly ToolStripMenuItem _startupItem;
-    private readonly ToolStripMenuItem _currentLabel;
-    private readonly List<ToolStripMenuItem> _actionItems = [];
 
-    private AppAction? _action;
+    // Header labels showing current assignments
+    private readonly ToolStripMenuItem _tapLabel;
+    private readonly ToolStripMenuItem _doubleTapLabel;
+    private readonly ToolStripMenuItem _holdLabel;
+
+    // Config
+    private CopilotConfig _config;
+
+    // Gesture state
+    private int _tapCount;
+    private bool _holdFired;
+    private bool _keyIsDown;
+    private readonly System.Windows.Forms.Timer _doubleTapTimer;
+    private readonly System.Windows.Forms.Timer _holdTimer;
 
     private static readonly string ConfigDir = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "CopilotRemap");
@@ -19,13 +31,35 @@ public sealed class TrayApp : ApplicationContext
 
     public TrayApp()
     {
-        _action = LoadAction();
+        _config = LoadConfig();
 
-        _currentLabel = new ToolStripMenuItem(_action?.DisplayName ?? "No action configured")
+        // Gesture timers
+        _doubleTapTimer = new System.Windows.Forms.Timer { Interval = _config.DoubleTapDelayMs };
+        _doubleTapTimer.Tick += (_, _) =>
         {
-            Enabled = false,
-            Font = new Font(SystemFonts.MenuFont!, FontStyle.Bold)
+            _doubleTapTimer.Stop();
+            ExecuteAction(_config.SingleTap, "Tap");
+            ResetGestureState();
         };
+
+        _holdTimer = new System.Windows.Forms.Timer { Interval = _config.HoldDelayMs };
+        _holdTimer.Tick += (_, _) =>
+        {
+            _holdTimer.Stop();
+            if (_keyIsDown)
+            {
+                _holdFired = true;
+                ExecuteAction(_config.Hold, "Hold");
+            }
+        };
+
+        // Header labels
+        _tapLabel = new ToolStripMenuItem($"Tap:    {_config.SingleTap?.DisplayName ?? "(none)"}")
+            { Enabled = false, Font = new Font(SystemFonts.MenuFont!, FontStyle.Bold) };
+        _doubleTapLabel = new ToolStripMenuItem($"2x Tap: {_config.DoubleTap?.DisplayName ?? "(none)"}")
+            { Enabled = false, Font = new Font(SystemFonts.MenuFont!, FontStyle.Bold) };
+        _holdLabel = new ToolStripMenuItem($"Hold:   {_config.Hold?.DisplayName ?? "(none)"}")
+            { Enabled = false, Font = new Font(SystemFonts.MenuFont!, FontStyle.Bold) };
 
         _startupItem = new ToolStripMenuItem("Run at Startup")
         {
@@ -34,30 +68,10 @@ public sealed class TrayApp : ApplicationContext
         };
         _startupItem.Click += (_, _) => ToggleStartup(_startupItem.Checked);
 
-        // Presets
-        var claudeCodeItem = MakeMenuItem("Claude Code (Terminal)", () =>
-            SetAction(AppAction.ClaudeCode()));
-
-        var claudeDesktopItem = MakeMenuItem("Claude Desktop", () =>
-            SetAction(AppAction.ClaudeDesktop()));
-        if (!AppAction.IsClaudeDesktopInstalled())
-        {
-            claudeDesktopItem.Text += " (not found)";
-            claudeDesktopItem.Enabled = false;
-        }
-
-        var claudeWebItem = MakeMenuItem("claude.ai (Browser)", () =>
-            SetAction(AppAction.ClaudeWeb()));
-
-        // Custom options
-        var customAppItem = MakeMenuItem("Custom Application...", OnCustomApp);
-        var customCmdItem = MakeMenuItem("Custom Command...", OnCustomCommand);
-        var customUrlItem = MakeMenuItem("Custom URL...", OnCustomUrl);
-
-        _actionItems.AddRange([claudeCodeItem, claudeDesktopItem, claudeWebItem,
-                               customAppItem, customCmdItem, customUrlItem]);
-
-        UpdateCheckmarks();
+        // Build submenus
+        var tapMenu = BuildActionSubmenu("Tap Action", _config.SingleTap, action => SetGestureAction("singleTap", action));
+        var doubleTapMenu = BuildActionSubmenu("Double Tap Action", _config.DoubleTap, action => SetGestureAction("doubleTap", action));
+        var holdMenu = BuildActionSubmenu("Hold Action", _config.Hold, action => SetGestureAction("hold", action));
 
         _trayIcon = new NotifyIcon
         {
@@ -68,15 +82,13 @@ public sealed class TrayApp : ApplicationContext
             {
                 Items =
                 {
-                    _currentLabel,
+                    _tapLabel,
+                    _doubleTapLabel,
+                    _holdLabel,
                     new ToolStripSeparator(),
-                    claudeCodeItem,
-                    claudeDesktopItem,
-                    claudeWebItem,
-                    new ToolStripSeparator(),
-                    customAppItem,
-                    customCmdItem,
-                    customUrlItem,
+                    tapMenu,
+                    doubleTapMenu,
+                    holdMenu,
                     new ToolStripSeparator(),
                     _startupItem,
                     new ToolStripSeparator(),
@@ -86,44 +98,145 @@ public sealed class TrayApp : ApplicationContext
         };
 
         _hook = new KeyboardHook();
-        _hook.CopilotKeyPressed += OnCopilotKeyPressed;
+        _hook.CopilotKeyDown += OnCopilotKeyDown;
+        _hook.CopilotKeyUp += OnCopilotKeyUp;
         _hook.Install();
     }
 
-    private ToolStripMenuItem MakeMenuItem(string text, Action onClick)
+    // --- Submenu builder ---
+
+    private ToolStripMenuItem BuildActionSubmenu(string label, AppAction? current, Action<AppAction?> onSet)
     {
-        var item = new ToolStripMenuItem(text);
-        item.Click += (_, _) => onClick();
-        return item;
+        var menu = new ToolStripMenuItem(label);
+
+        // Presets
+        var claudeCodeItem = new ToolStripMenuItem("Claude Code (Terminal)");
+        claudeCodeItem.Click += (_, _) => onSet(AppAction.ClaudeCode());
+
+        var claudeDesktopItem = new ToolStripMenuItem("Claude Desktop");
+        claudeDesktopItem.Click += (_, _) => onSet(AppAction.ClaudeDesktop());
+        if (!AppAction.IsClaudeDesktopInstalled())
+        {
+            claudeDesktopItem.Text += " (not found)";
+            claudeDesktopItem.Enabled = false;
+        }
+
+        var claudeWebItem = new ToolStripMenuItem("claude.ai (Browser)");
+        claudeWebItem.Click += (_, _) => onSet(AppAction.ClaudeWeb());
+
+        // Custom options
+        var customAppItem = new ToolStripMenuItem("Custom Application...");
+        customAppItem.Click += (_, _) =>
+        {
+            var action = PromptCustomApp();
+            if (action != null) onSet(action);
+        };
+
+        var customCmdItem = new ToolStripMenuItem("Custom Command...");
+        customCmdItem.Click += (_, _) =>
+        {
+            var action = PromptCustomCommand();
+            if (action != null) onSet(action);
+        };
+
+        var customUrlItem = new ToolStripMenuItem("Custom URL...");
+        customUrlItem.Click += (_, _) =>
+        {
+            var action = PromptCustomUrl();
+            if (action != null) onSet(action);
+        };
+
+        var noneItem = new ToolStripMenuItem("None (disable)");
+        noneItem.Click += (_, _) => onSet(null);
+
+        // Checkmarks
+        var presets = new[] { claudeCodeItem, claudeDesktopItem, claudeWebItem };
+        SetCheckmark(presets, noneItem, current);
+
+        menu.DropDownItems.AddRange(new ToolStripItem[]
+        {
+            claudeCodeItem, claudeDesktopItem, claudeWebItem,
+            new ToolStripSeparator(),
+            customAppItem, customCmdItem, customUrlItem,
+            new ToolStripSeparator(),
+            noneItem
+        });
+
+        return menu;
     }
 
-    private void SetAction(AppAction action)
+    private static void SetCheckmark(ToolStripMenuItem[] presets, ToolStripMenuItem noneItem, AppAction? current)
     {
-        _action = action;
-        SaveAction(action);
-        _currentLabel.Text = action.DisplayName;
-        UpdateCheckmarks();
-        _trayIcon.ShowBalloonTip(2000, "CopilotRemap",
-            $"Copilot key → {action.DisplayName}", ToolTipIcon.Info);
-    }
+        foreach (var p in presets) p.Checked = false;
+        noneItem.Checked = false;
 
-    private void UpdateCheckmarks()
-    {
-        foreach (var item in _actionItems)
-            item.Checked = false;
+        if (current == null)
+        {
+            noneItem.Checked = true;
+            return;
+        }
 
-        if (_action == null) return;
-
-        // Match by display name for presets
-        var match = _actionItems.FirstOrDefault(i =>
-            (i.Text ?? "").Replace(" (not found)", "") == _action!.DisplayName);
+        var match = presets.FirstOrDefault(p =>
+            (p.Text ?? "").Replace(" (not found)", "") == current.DisplayName);
         if (match != null)
             match.Checked = true;
     }
 
-    // --- Custom action handlers ---
+    // --- Set gesture action ---
 
-    private void OnCustomApp()
+    private void SetGestureAction(string gesture, AppAction? action)
+    {
+        switch (gesture)
+        {
+            case "singleTap":
+                _config = _config with { SingleTap = action };
+                _tapLabel.Text = $"Tap:    {action?.DisplayName ?? "(none)"}";
+                break;
+            case "doubleTap":
+                _config = _config with { DoubleTap = action };
+                _doubleTapLabel.Text = $"2x Tap: {action?.DisplayName ?? "(none)"}";
+                break;
+            case "hold":
+                _config = _config with { Hold = action };
+                _holdLabel.Text = $"Hold:   {action?.DisplayName ?? "(none)"}";
+                break;
+        }
+
+        SaveConfig(_config);
+        RebuildSubmenus();
+
+        var name = action?.DisplayName ?? "None";
+        _trayIcon.ShowBalloonTip(2000, "CopilotRemap",
+            $"{GestureDisplayName(gesture)} → {name}", ToolTipIcon.Info);
+    }
+
+    private static string GestureDisplayName(string gesture) => gesture switch
+    {
+        "singleTap" => "Tap",
+        "doubleTap" => "Double Tap",
+        "hold" => "Hold",
+        _ => gesture
+    };
+
+    private void RebuildSubmenus()
+    {
+        var strip = _trayIcon.ContextMenuStrip!;
+
+        // Find and replace the three submenu items (indices 4, 5, 6 after header labels + separator)
+        ReplaceSubmenuAt(strip, 4, "Tap Action", _config.SingleTap, a => SetGestureAction("singleTap", a));
+        ReplaceSubmenuAt(strip, 5, "Double Tap Action", _config.DoubleTap, a => SetGestureAction("doubleTap", a));
+        ReplaceSubmenuAt(strip, 6, "Hold Action", _config.Hold, a => SetGestureAction("hold", a));
+    }
+
+    private void ReplaceSubmenuAt(ContextMenuStrip strip, int index, string label, AppAction? current, Action<AppAction?> onSet)
+    {
+        strip.Items.RemoveAt(index);
+        strip.Items.Insert(index, BuildActionSubmenu(label, current, onSet));
+    }
+
+    // --- Custom action dialogs ---
+
+    private static AppAction? PromptCustomApp()
     {
         using var dialog = new OpenFileDialog
         {
@@ -131,73 +244,115 @@ public sealed class TrayApp : ApplicationContext
             Filter = "Executables (*.exe)|*.exe|All Files (*.*)|*.*",
             InitialDirectory = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles)
         };
-        if (dialog.ShowDialog() != DialogResult.OK) return;
+        if (dialog.ShowDialog() != DialogResult.OK) return null;
 
-        SetAction(new AppAction
+        return new AppAction
         {
             Type = ActionType.LaunchApp,
             Target = dialog.FileName,
             DisplayName = Path.GetFileNameWithoutExtension(dialog.FileName)
-        });
+        };
     }
 
-    private void OnCustomCommand()
+    private static AppAction? PromptCustomCommand()
     {
         using var dialog = new InputDialog(
             "Custom Command",
             "Command to run in terminal (e.g. python, node, wsl):",
-            _action?.Type == ActionType.RunInTerminal ? _action.Target : "");
+            "");
 
-        if (dialog.ShowDialog() != DialogResult.OK || string.IsNullOrWhiteSpace(dialog.Value)) return;
+        if (dialog.ShowDialog() != DialogResult.OK || string.IsNullOrWhiteSpace(dialog.Value)) return null;
 
-        SetAction(new AppAction
+        return new AppAction
         {
             Type = ActionType.RunInTerminal,
             Target = dialog.Value.Trim(),
             DisplayName = $"{dialog.Value.Trim()} (Terminal)"
-        });
+        };
     }
 
-    private void OnCustomUrl()
+    private static AppAction? PromptCustomUrl()
     {
         using var dialog = new InputDialog(
             "Custom URL",
             "URL to open in browser:",
-            _action?.Type == ActionType.OpenUrl ? _action.Target : "https://");
+            "https://");
 
-        if (dialog.ShowDialog() != DialogResult.OK || string.IsNullOrWhiteSpace(dialog.Value)) return;
+        if (dialog.ShowDialog() != DialogResult.OK || string.IsNullOrWhiteSpace(dialog.Value)) return null;
 
         var url = dialog.Value.Trim();
-        SetAction(new AppAction
+        return new AppAction
         {
             Type = ActionType.OpenUrl,
             Target = url,
             DisplayName = new Uri(url).Host
-        });
+        };
     }
 
-    // --- Key handler ---
+    // --- Gesture detection ---
 
-    private void OnCopilotKeyPressed()
+    private void OnCopilotKeyDown()
     {
-        if (_action == null || string.IsNullOrEmpty(_action.Target))
+        if (_keyIsDown) return; // Ignore key repeat
+        _keyIsDown = true;
+
+        _tapCount++;
+        _doubleTapTimer.Stop();
+        _holdTimer.Start();
+    }
+
+    private void OnCopilotKeyUp()
+    {
+        _keyIsDown = false;
+        _holdTimer.Stop();
+
+        if (_holdFired)
+        {
+            ResetGestureState();
+            return;
+        }
+
+        if (_tapCount >= 2)
+        {
+            ExecuteAction(_config.DoubleTap, "Double Tap");
+            ResetGestureState();
+        }
+        else if (_tapCount == 1)
+        {
+            _doubleTapTimer.Start();
+        }
+    }
+
+    private void ResetGestureState()
+    {
+        _tapCount = 0;
+        _holdFired = false;
+        _doubleTapTimer.Stop();
+        _holdTimer.Stop();
+    }
+
+    // --- Execute action ---
+
+    private void ExecuteAction(AppAction? action, string gestureName)
+    {
+        if (action == null || string.IsNullOrEmpty(action.Target))
         {
             _trayIcon.ShowBalloonTip(3000, "CopilotRemap",
-                "No action configured. Right-click the tray icon to set one.",
+                $"No action configured for {gestureName}. Right-click the tray icon to set one.",
                 ToolTipIcon.Warning);
             return;
         }
 
-        if (_action.Type == ActionType.LaunchApp && !File.Exists(_action.Target))
+        if (action.Type == ActionType.LaunchApp && !File.Exists(action.Target))
         {
             _trayIcon.ShowBalloonTip(3000, "CopilotRemap",
-                $"Target not found: {_action.Target}", ToolTipIcon.Error);
+                $"Target not found: {action.Target}", ToolTipIcon.Error);
             return;
         }
 
         try
         {
-            _action.Execute();
+            action.Execute();
         }
         catch (Exception ex)
         {
@@ -211,6 +366,8 @@ public sealed class TrayApp : ApplicationContext
     private void Exit()
     {
         _hook.Dispose();
+        _doubleTapTimer.Dispose();
+        _holdTimer.Dispose();
         _trayIcon.Visible = false;
         _trayIcon.Dispose();
         Application.Exit();
@@ -234,12 +391,10 @@ public sealed class TrayApp : ApplicationContext
 
             if (processPath.EndsWith("CopilotRemap.exe", StringComparison.OrdinalIgnoreCase))
             {
-                // Published exe — shortcut points directly to it
                 targetPath = processPath;
             }
             else
             {
-                // Dev mode (dotnet run) — shortcut points to dotnet + dll
                 targetPath = processPath;
                 arguments = $"\"{Path.Combine(AppContext.BaseDirectory, "CopilotRemap.dll")}\"";
             }
@@ -254,7 +409,6 @@ public sealed class TrayApp : ApplicationContext
 
     private static void CreateShortcut(string shortcutPath, string targetPath, string arguments)
     {
-        // Write a temp .ps1 script to avoid inline quoting issues
         var script = Path.Combine(Path.GetTempPath(), "CopilotRemap_mklink.ps1");
         File.WriteAllText(script,
             $"$ws = New-Object -ComObject WScript.Shell\n" +
@@ -277,21 +431,53 @@ public sealed class TrayApp : ApplicationContext
 
     // --- Config persistence ---
 
-    private static AppAction? LoadAction()
+    private record CopilotConfig
     {
-        if (!File.Exists(ConfigFile)) return null;
+        public AppAction? SingleTap { get; init; }
+        public AppAction? DoubleTap { get; init; }
+        public AppAction? Hold { get; init; }
+        public int DoubleTapDelayMs { get; init; } = 350;
+        public int HoldDelayMs { get; init; } = 500;
+    }
+
+    private static CopilotConfig LoadConfig()
+    {
+        if (!File.Exists(ConfigFile))
+            return new CopilotConfig();
+
         try
         {
             var json = File.ReadAllText(ConfigFile);
-            return JsonSerializer.Deserialize<AppAction>(json);
+
+            // Try new config format first
+            var config = JsonSerializer.Deserialize<CopilotConfig>(json, JsonOpts);
+            if (config != null && (config.SingleTap != null || config.DoubleTap != null || config.Hold != null))
+                return config;
+
+            // Backwards compatibility: old single-action config migrates to SingleTap
+            var legacy = JsonSerializer.Deserialize<AppAction>(json);
+            if (legacy != null && !string.IsNullOrEmpty(legacy.Target))
+            {
+                var migrated = new CopilotConfig { SingleTap = legacy };
+                SaveConfig(migrated);
+                return migrated;
+            }
         }
-        catch { return null; }
+        catch { }
+
+        return new CopilotConfig();
     }
 
-    private static void SaveAction(AppAction action)
+    private static void SaveConfig(CopilotConfig config)
     {
         Directory.CreateDirectory(ConfigDir);
-        var json = JsonSerializer.Serialize(action, new JsonSerializerOptions { WriteIndented = true });
+        var json = JsonSerializer.Serialize(config, JsonOpts);
         File.WriteAllText(ConfigFile, json);
     }
+
+    private static readonly JsonSerializerOptions JsonOpts = new()
+    {
+        WriteIndented = true,
+        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
+    };
 }

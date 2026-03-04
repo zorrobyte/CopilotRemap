@@ -60,25 +60,34 @@ public sealed class AppAction
     {
         var fullCommand = string.IsNullOrEmpty(args) ? command : $"{command} {args}";
 
+        // wt.exe is an App Execution Alias and can't be launched directly
+        // with UseShellExecute=false, but we need UseShellExecute=false to
+        // clear CLAUDECODE env var (blocks nested Claude Code sessions).
+        // Solution: use cmd.exe as a shim to resolve the alias.
+        var psi = new ProcessStartInfo
+        {
+            FileName = "cmd.exe",
+            Arguments = $"/c wt.exe new-tab -- {fullCommand}",
+            UseShellExecute = false,
+            CreateNoWindow = true
+        };
+        psi.Environment.Remove("CLAUDECODE");
+
         try
         {
-            // Windows Terminal (ships with Windows 11)
-            Process.Start(new ProcessStartInfo
-            {
-                FileName = "wt.exe",
-                Arguments = $"new-tab -- {fullCommand}",
-                UseShellExecute = true
-            });
+            Process.Start(psi);
         }
         catch
         {
-            // Fall back to PowerShell
-            Process.Start(new ProcessStartInfo
+            // Fall back to PowerShell if Windows Terminal is not available
+            var fallback = new ProcessStartInfo
             {
                 FileName = "powershell.exe",
                 Arguments = $"-NoExit -Command \"& {fullCommand}\"",
-                UseShellExecute = true
-            });
+                UseShellExecute = false
+            };
+            fallback.Environment.Remove("CLAUDECODE");
+            Process.Start(fallback);
         }
     }
 

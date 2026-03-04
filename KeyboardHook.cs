@@ -8,12 +8,15 @@ namespace CopilotRemap;
 /// Handles two known key mappings:
 ///   - VK_LAUNCH_APP1 (0xB6) — some keyboards send this directly
 ///   - Win+Shift+F23 — other keyboards send this combo
+/// Fires CopilotKeyDown on press and CopilotKeyUp on release.
 /// </summary>
 public sealed class KeyboardHook : IDisposable
 {
     private const int WH_KEYBOARD_LL = 13;
     private const int WM_KEYDOWN = 0x0100;
     private const int WM_SYSKEYDOWN = 0x0104;
+    private const int WM_KEYUP = 0x0101;
+    private const int WM_SYSKEYUP = 0x0105;
 
     private const int VK_LAUNCH_APP1 = 0xB6;
     private const int VK_F23 = 0x86;
@@ -21,7 +24,8 @@ public sealed class KeyboardHook : IDisposable
     private const int VK_RWIN = 0x5C;
     private const int VK_SHIFT = 0x10;
 
-    public event Action? CopilotKeyPressed;
+    public event Action? CopilotKeyDown;
+    public event Action? CopilotKeyUp;
 
     private IntPtr _hookId;
     private readonly LowLevelKeyboardProc _proc;
@@ -71,14 +75,25 @@ public sealed class KeyboardHook : IDisposable
 
     private IntPtr HookCallback(int nCode, IntPtr wParam, IntPtr lParam)
     {
-        if (nCode >= 0 && (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN))
+        if (nCode >= 0)
         {
             var info = Marshal.PtrToStructure<KBDLLHOOKSTRUCT>(lParam);
 
-            if (IsCopilotKey(info))
+            if (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN)
             {
-                CopilotKeyPressed?.Invoke();
-                return (IntPtr)1; // Suppress the key
+                if (IsCopilotKey(info))
+                {
+                    CopilotKeyDown?.Invoke();
+                    return (IntPtr)1; // Suppress the key
+                }
+            }
+            else if (wParam == WM_KEYUP || wParam == WM_SYSKEYUP)
+            {
+                if (IsCopilotKeyUp(info))
+                {
+                    CopilotKeyUp?.Invoke();
+                    return (IntPtr)1; // Suppress the key
+                }
             }
         }
 
@@ -101,6 +116,12 @@ public sealed class KeyboardHook : IDisposable
         }
 
         return false;
+    }
+
+    private static bool IsCopilotKeyUp(KBDLLHOOKSTRUCT info)
+    {
+        // On key-up we only check the vkCode — modifier state may have changed
+        return info.vkCode == VK_LAUNCH_APP1 || info.vkCode == VK_F23;
     }
 
     public void Dispose()
