@@ -21,9 +21,15 @@ public sealed class AppAction
 
     public void Execute()
     {
+        if (string.IsNullOrWhiteSpace(Target))
+            throw new InvalidOperationException("Action target is not configured.");
+
         switch (Type)
         {
             case ActionType.LaunchApp:
+                // Validate target is a real file path, not a URL or shell command
+                if (Target.IndexOfAny(Path.GetInvalidPathChars()) >= 0)
+                    throw new InvalidOperationException($"Invalid application path: {Target}");
                 Process.Start(new ProcessStartInfo
                 {
                     FileName = Target,
@@ -33,7 +39,10 @@ public sealed class AppAction
                 break;
 
             case ActionType.LaunchStoreApp:
-                // Launch MSIX/Store apps via shell:AppsFolder\{AppUserModelId}
+                // Validate AppUserModelId format (PackageFamilyName!AppId) —
+                // reject shell metacharacters to prevent argument injection into explorer.exe
+                if (Target.IndexOfAny(InvalidCommandChars) >= 0 || Target.Contains(".."))
+                    throw new InvalidOperationException($"Invalid store app ID: {Target}");
                 Process.Start(new ProcessStartInfo
                 {
                     FileName = "explorer.exe",
