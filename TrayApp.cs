@@ -254,6 +254,8 @@ public sealed class TrayApp : ApplicationContext
         };
     }
 
+    private static readonly char[] DisallowedCommandChars = ['&', '|', ';', '>', '<', '`', '$', '(', ')', '{', '}', '\n', '\r'];
+
     private static AppAction? PromptCustomCommand()
     {
         using var dialog = new InputDialog(
@@ -263,11 +265,20 @@ public sealed class TrayApp : ApplicationContext
 
         if (dialog.ShowDialog() != DialogResult.OK || string.IsNullOrWhiteSpace(dialog.Value)) return null;
 
+        var command = dialog.Value.Trim();
+
+        if (command.IndexOfAny(DisallowedCommandChars) >= 0)
+        {
+            MessageBox.Show("Command contains disallowed characters (&, |, ;, >, <, etc.).",
+                "Invalid Command", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return null;
+        }
+
         return new AppAction
         {
             Type = ActionType.RunInTerminal,
-            Target = dialog.Value.Trim(),
-            DisplayName = $"{dialog.Value.Trim()} (Terminal)"
+            Target = command,
+            DisplayName = $"{command} (Terminal)"
         };
     }
 
