@@ -254,6 +254,8 @@ public sealed class TrayApp : ApplicationContext
         };
     }
 
+    private static readonly char[] DisallowedCommandChars = ['&', '|', ';', '>', '<', '`', '$', '(', ')', '{', '}', '\n', '\r'];
+
     private static AppAction? PromptCustomCommand()
     {
         using var dialog = new InputDialog(
@@ -263,11 +265,20 @@ public sealed class TrayApp : ApplicationContext
 
         if (dialog.ShowDialog() != DialogResult.OK || string.IsNullOrWhiteSpace(dialog.Value)) return null;
 
+        var command = dialog.Value.Trim();
+
+        if (command.IndexOfAny(DisallowedCommandChars) >= 0)
+        {
+            MessageBox.Show("Command contains disallowed characters (&, |, ;, >, <, etc.).",
+                "Invalid Command", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return null;
+        }
+
         return new AppAction
         {
             Type = ActionType.RunInTerminal,
-            Target = dialog.Value.Trim(),
-            DisplayName = $"{dialog.Value.Trim()} (Terminal)"
+            Target = command,
+            DisplayName = $"{command} (Terminal)"
         };
     }
 
@@ -275,17 +286,26 @@ public sealed class TrayApp : ApplicationContext
     {
         using var dialog = new InputDialog(
             "Custom URL",
-            "URL to open in browser:",
+            "URL to open in browser (https:// only):",
             "https://");
 
         if (dialog.ShowDialog() != DialogResult.OK || string.IsNullOrWhiteSpace(dialog.Value)) return null;
 
         var url = dialog.Value.Trim();
+
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var parsedUri)
+            || (parsedUri.Scheme != "https" && parsedUri.Scheme != "http"))
+        {
+            MessageBox.Show("Only http:// and https:// URLs are allowed.",
+                "Invalid URL", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return null;
+        }
+
         return new AppAction
         {
             Type = ActionType.OpenUrl,
-            Target = url,
-            DisplayName = new Uri(url).Host
+            Target = parsedUri.AbsoluteUri,
+            DisplayName = parsedUri.Host
         };
     }
 
@@ -409,25 +429,29 @@ public sealed class TrayApp : ApplicationContext
 
     private static void CreateShortcut(string shortcutPath, string targetPath, string arguments)
     {
-        var script = Path.Combine(Path.GetTempPath(), "CopilotRemap_mklink.ps1");
-        File.WriteAllText(script,
-            $"$ws = New-Object -ComObject WScript.Shell\n" +
-            $"$s = $ws.CreateShortcut('{shortcutPath.Replace("'", "''")}')\n" +
-            $"$s.TargetPath = '{targetPath.Replace("'", "''")}'\n" +
-            $"$s.Arguments = '{arguments.Replace("'", "''")}'\n" +
-            $"$s.Save()\n");
+        // Use -Command with properly escaped parameters instead of writing a temp script file.
+        // This avoids TOCTOU race conditions on the temp file and reduces injection surface.
+        var psCommand =
+            "$ws = New-Object -ComObject WScript.Shell; " +
+            $"$s = $ws.CreateShortcut([System.Management.Automation.WildcardPattern]::Escape('{EscapePowerShellString(shortcutPath)}')); " +
+            $"$s.TargetPath = '{EscapePowerShellString(targetPath)}'; " +
+            $"$s.Arguments = '{EscapePowerShellString(arguments)}'; " +
+            "$s.Save()";
 
         var proc = Process.Start(new ProcessStartInfo
         {
             FileName = "powershell.exe",
-            Arguments = $"-NoProfile -ExecutionPolicy Bypass -File \"{script}\"",
+            Arguments = $"-NoProfile -ExecutionPolicy Bypass -Command \"{psCommand.Replace("\"", "\\\"")}\"",
             CreateNoWindow = true,
             UseShellExecute = false
         });
         proc?.WaitForExit();
-
-        try { File.Delete(script); } catch { }
     }
+
+    /// <summary>
+    /// Escapes a string for safe inclusion in a PowerShell single-quoted string.
+    /// </summary>
+    private static string EscapePowerShellString(string value) => value.Replace("'", "''");
 
     // --- Config persistence ---
 

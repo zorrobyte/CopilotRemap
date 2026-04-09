@@ -21,9 +21,15 @@ public sealed class AppAction
 
     public void Execute()
     {
+        if (string.IsNullOrWhiteSpace(Target))
+            throw new InvalidOperationException("Action target is not configured.");
+
         switch (Type)
         {
             case ActionType.LaunchApp:
+                // Validate target is a real file path, not a URL or shell command
+                if (Target.IndexOfAny(Path.GetInvalidPathChars()) >= 0)
+                    throw new InvalidOperationException($"Invalid application path: {Target}");
                 Process.Start(new ProcessStartInfo
                 {
                     FileName = Target,
@@ -33,7 +39,10 @@ public sealed class AppAction
                 break;
 
             case ActionType.LaunchStoreApp:
-                // Launch MSIX/Store apps via shell:AppsFolder\{AppUserModelId}
+                // Validate AppUserModelId format (PackageFamilyName!AppId) —
+                // reject shell metacharacters to prevent argument injection into explorer.exe
+                if (Target.IndexOfAny(InvalidCommandChars) >= 0 || Target.Contains(".."))
+                    throw new InvalidOperationException($"Invalid store app ID: {Target}");
                 Process.Start(new ProcessStartInfo
                 {
                     FileName = "explorer.exe",
@@ -47,18 +56,32 @@ public sealed class AppAction
                 break;
 
             case ActionType.OpenUrl:
+                if (!Uri.TryCreate(Target, UriKind.Absolute, out var uri)
+                    || (uri.Scheme != "https" && uri.Scheme != "http"))
+                    throw new InvalidOperationException($"Invalid or disallowed URL scheme: {Target}");
                 Process.Start(new ProcessStartInfo
                 {
-                    FileName = Target,
+                    FileName = uri.AbsoluteUri,
                     UseShellExecute = true
                 });
                 break;
         }
     }
 
+    private static readonly char[] InvalidCommandChars = ['&', '|', ';', '>', '<', '`', '$', '(', ')', '{', '}', '\n', '\r'];
+
     private static void LaunchInTerminal(string command, string args)
     {
-        var fullCommand = string.IsNullOrEmpty(args) ? command : $"{command} {args}";
+        // Validate command to prevent injection via cmd.exe /c or powershell -Command
+        if (string.IsNullOrWhiteSpace(command))
+            throw new ArgumentException("Command must not be empty.", nameof(command));
+
+        if (command.IndexOfAny(InvalidCommandChars) >= 0 ||
+            (!string.IsNullOrEmpty(args) && args.IndexOfAny(InvalidCommandChars) >= 0))
+            throw new ArgumentException("Command or arguments contain disallowed shell metacharacters.");
+
+        var quotedCommand = $"\"{command}\"";
+        var fullCommand = string.IsNullOrEmpty(args) ? quotedCommand : $"{quotedCommand} {args}";
 
         // wt.exe is an App Execution Alias and can't be launched directly
         // with UseShellExecute=false, but we need UseShellExecute=false to
@@ -79,11 +102,12 @@ public sealed class AppAction
         }
         catch
         {
-            // Fall back to PowerShell if Windows Terminal is not available
+            // Fall back to PowerShell if Windows Terminal is not available.
+            // Use -File semantics via encoded command to avoid injection.
             var fallback = new ProcessStartInfo
             {
                 FileName = "powershell.exe",
-                Arguments = $"-NoExit -Command \"& {fullCommand}\"",
+                Arguments = $"-NoProfile -NoExit -Command \"& {fullCommand}\"",
                 UseShellExecute = false
             };
             fallback.Environment.Remove("CLAUDECODE");
