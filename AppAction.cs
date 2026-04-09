@@ -59,9 +59,20 @@ public sealed class AppAction
         }
     }
 
+    private static readonly char[] InvalidCommandChars = ['&', '|', ';', '>', '<', '`', '$', '(', ')', '{', '}', '\n', '\r'];
+
     private static void LaunchInTerminal(string command, string args)
     {
-        var fullCommand = string.IsNullOrEmpty(args) ? command : $"{command} {args}";
+        // Validate command to prevent injection via cmd.exe /c or powershell -Command
+        if (string.IsNullOrWhiteSpace(command))
+            throw new ArgumentException("Command must not be empty.", nameof(command));
+
+        if (command.IndexOfAny(InvalidCommandChars) >= 0 ||
+            (!string.IsNullOrEmpty(args) && args.IndexOfAny(InvalidCommandChars) >= 0))
+            throw new ArgumentException("Command or arguments contain disallowed shell metacharacters.");
+
+        var quotedCommand = $"\"{command}\"";
+        var fullCommand = string.IsNullOrEmpty(args) ? quotedCommand : $"{quotedCommand} {args}";
 
         // wt.exe is an App Execution Alias and can't be launched directly
         // with UseShellExecute=false, but we need UseShellExecute=false to
@@ -82,11 +93,12 @@ public sealed class AppAction
         }
         catch
         {
-            // Fall back to PowerShell if Windows Terminal is not available
+            // Fall back to PowerShell if Windows Terminal is not available.
+            // Use -File semantics via encoded command to avoid injection.
             var fallback = new ProcessStartInfo
             {
                 FileName = "powershell.exe",
-                Arguments = $"-NoExit -Command \"& {fullCommand}\"",
+                Arguments = $"-NoProfile -NoExit -Command \"& {fullCommand}\"",
                 UseShellExecute = false
             };
             fallback.Environment.Remove("CLAUDECODE");
