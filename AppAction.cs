@@ -9,7 +9,8 @@ public enum ActionType
     LaunchApp,
     LaunchStoreApp,
     RunInTerminal,
-    OpenUrl
+    OpenUrl,
+    SearchChats
 }
 
 public sealed class AppAction
@@ -100,6 +101,30 @@ public sealed class AppAction
         DisplayName = "Claude Code (Terminal)"
     };
 
+    public static AppAction ClaudeCodeContinue() => new()
+    {
+        Type = ActionType.RunInTerminal,
+        Target = "claude",
+        Arguments = "--continue",
+        DisplayName = "Claude Code (Continue)"
+    };
+
+    public static AppAction ClaudeCodeResume() => new()
+    {
+        Type = ActionType.RunInTerminal,
+        Target = "claude",
+        Arguments = "--resume",
+        DisplayName = "Claude Code (Resume)"
+    };
+
+    public static AppAction ClaudeCodeResumeById(string sessionId) => new()
+    {
+        Type = ActionType.RunInTerminal,
+        Target = "claude",
+        Arguments = $"--resume {sessionId}",
+        DisplayName = $"Claude Code (Resume {sessionId[..8]})"
+    };
+
     public static AppAction ClaudeDesktop()
     {
         var appId = FindClaudeDesktopAppId();
@@ -116,6 +141,13 @@ public sealed class AppAction
         Type = ActionType.OpenUrl,
         Target = "https://claude.ai",
         DisplayName = "claude.ai (Browser)"
+    };
+
+    public static AppAction SearchChats() => new()
+    {
+        Type = ActionType.SearchChats,
+        Target = "search",
+        DisplayName = "Search Chats"
     };
 
     public static bool IsClaudeDesktopInstalled() => FindClaudeDesktopAppId() != null;
