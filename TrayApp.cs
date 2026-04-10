@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
@@ -24,6 +25,8 @@ public sealed class TrayApp : ApplicationContext
     private bool _keyIsDown;
     private readonly System.Windows.Forms.Timer _doubleTapTimer;
     private readonly System.Windows.Forms.Timer _holdTimer;
+
+
 
     private static readonly string ConfigDir = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "CopilotRemap");
@@ -100,6 +103,7 @@ public sealed class TrayApp : ApplicationContext
         _hook = new KeyboardHook();
         _hook.CopilotKeyDown += OnCopilotKeyDown;
         _hook.CopilotKeyUp += OnCopilotKeyUp;
+        _hook.CopilotSpacePressed += OnCopilotSpacePressed;
         _hook.Install();
     }
 
@@ -123,6 +127,14 @@ public sealed class TrayApp : ApplicationContext
 
         var claudeWebItem = new ToolStripMenuItem("claude.ai (Browser)");
         claudeWebItem.Click += (_, _) => onSet(AppAction.ClaudeWeb());
+
+        var searchChatsItem = new ToolStripMenuItem("Search Chats");
+        searchChatsItem.Click += (_, _) => onSet(AppAction.SearchChats());
+        if (!AppAction.IsClaudeDesktopInstalled())
+        {
+            searchChatsItem.Text += " (needs Claude Desktop)";
+            searchChatsItem.Enabled = false;
+        }
 
         // Custom options
         var customAppItem = new ToolStripMenuItem("Custom Application...");
@@ -150,12 +162,12 @@ public sealed class TrayApp : ApplicationContext
         noneItem.Click += (_, _) => onSet(null);
 
         // Checkmarks
-        var presets = new[] { claudeCodeItem, claudeDesktopItem, claudeWebItem };
+        var presets = new[] { claudeCodeItem, claudeDesktopItem, claudeWebItem, searchChatsItem };
         SetCheckmark(presets, noneItem, current);
 
         menu.DropDownItems.AddRange(new ToolStripItem[]
         {
-            claudeCodeItem, claudeDesktopItem, claudeWebItem,
+            claudeCodeItem, claudeDesktopItem, claudeWebItem, searchChatsItem,
             new ToolStripSeparator(),
             customAppItem, customCmdItem, customUrlItem,
             new ToolStripSeparator(),
@@ -323,6 +335,148 @@ public sealed class TrayApp : ApplicationContext
         }
     }
 
+    private void OnCopilotSpacePressed()
+    {
+        // Cancel any in-progress gesture so key-up becomes a no-op
+        ResetGestureState();
+        _keyIsDown = false;
+
+        TriggerClaudeSearch();
+    }
+
+    private void TriggerClaudeSearch()
+    {
+        // Find existing Claude Desktop window
+        var hwnd = FindClaudeWindow();
+
+        if (hwnd == IntPtr.Zero)
+        {
+            // Not running — launch it, then poll for the window
+            try
+            {
+                AppAction.ClaudeDesktop().Execute();
+            }
+            catch (Exception ex)
+            {
+                _trayIcon.ShowBalloonTip(3000, "CopilotRemap",
+                    $"Claude Desktop not found: {ex.Message}", ToolTipIcon.Error);
+                return;
+            }
+
+            // Poll until window appears (up to 5s in 100ms steps)
+            int retries = 50;
+            var pollTimer = new System.Windows.Forms.Timer { Interval = 100 };
+            pollTimer.Tick += (_, _) =>
+            {
+                hwnd = FindClaudeWindow();
+                if (hwnd != IntPtr.Zero || --retries <= 0)
+                {
+                    pollTimer.Stop();
+                    pollTimer.Dispose();
+                    if (hwnd != IntPtr.Zero)
+                        FocusAndSearch(hwnd);
+                }
+            };
+            pollTimer.Start();
+        }
+        else
+        {
+            FocusAndSearch(hwnd);
+        }
+    }
+
+    // --- Win32: find and focus Claude Desktop ---
+
+    [DllImport("user32.dll")]
+    private static extern bool SetForegroundWindow(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+
+    [DllImport("user32.dll")]
+    private static extern bool IsIconic(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetForegroundWindow();
+
+    [DllImport("user32.dll")]
+    private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
+
+    [DllImport("kernel32.dll")]
+    private static extern uint GetCurrentThreadId();
+
+    [DllImport("user32.dll")]
+    private static extern bool AttachThreadInput(uint idAttach, uint idAttachTo, bool fAttach);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern int GetWindowText(IntPtr hWnd, System.Text.StringBuilder text, int count);
+
+    [DllImport("user32.dll")]
+    private static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, IntPtr lParam);
+
+    [DllImport("user32.dll")]
+    private static extern bool IsWindowVisible(IntPtr hWnd);
+
+    private delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
+
+    private const int SW_RESTORE = 9;
+
+    private static IntPtr FindClaudeWindow()
+    {
+        IntPtr found = IntPtr.Zero;
+        var sb = new System.Text.StringBuilder(256);
+
+        EnumWindows((hwnd, _) =>
+        {
+            if (!IsWindowVisible(hwnd)) return true;
+            GetWindowText(hwnd, sb, sb.Capacity);
+            var title = sb.ToString();
+            if (title.Contains("Claude", StringComparison.OrdinalIgnoreCase)
+                && !title.Contains("CopilotRemap", StringComparison.OrdinalIgnoreCase))
+            {
+                found = hwnd;
+                return false;
+            }
+            return true;
+        }, IntPtr.Zero);
+
+        return found;
+    }
+
+    private void FocusAndSearch(IntPtr hwnd)
+    {
+        // Restore if minimized
+        if (IsIconic(hwnd))
+            ShowWindow(hwnd, SW_RESTORE);
+
+        // Attach to foreground thread to reliably call SetForegroundWindow
+        var fgHwnd = GetForegroundWindow();
+        var fgThread = GetWindowThreadProcessId(fgHwnd, out _);
+        var ourThread = GetCurrentThreadId();
+
+        bool attached = false;
+        if (fgThread != ourThread)
+            attached = AttachThreadInput(ourThread, fgThread, true);
+
+        SetForegroundWindow(hwnd);
+
+        if (attached)
+            AttachThreadInput(ourThread, fgThread, false);
+
+        // Wait for window activation + user releasing Copilot keys, then SendKeys
+        var t = new System.Windows.Forms.Timer { Interval = 200 };
+        t.Tick += (_, _) =>
+        {
+            t.Stop();
+            t.Dispose();
+            // Escape first to close search if already open (Ctrl+K is a toggle),
+            // then Ctrl+K to open it fresh — guarantees search is always shown.
+            SendKeys.Send("{ESC}");
+            SendKeys.Send("^k");
+        };
+        t.Start();
+    }
+
     private void ResetGestureState()
     {
         _tapCount = 0;
@@ -340,6 +494,12 @@ public sealed class TrayApp : ApplicationContext
             _trayIcon.ShowBalloonTip(3000, "CopilotRemap",
                 $"No action configured for {gestureName}. Right-click the tray icon to set one.",
                 ToolTipIcon.Warning);
+            return;
+        }
+
+        if (action.Type == ActionType.SearchChats)
+        {
+            TriggerClaudeSearch();
             return;
         }
 
