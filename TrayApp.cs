@@ -81,7 +81,7 @@ public sealed class TrayApp : ApplicationContext
             {
                 Description = "Select default working directory for terminal and app actions",
                 UseDescriptionForTitle = true,
-                SelectedPath = _config.WorkingDirectory ?? string.Empty
+                SelectedPath = _config?.WorkingDirectory ?? string.Empty
             };
             if (dialog.ShowDialog() == DialogResult.OK && !string.IsNullOrWhiteSpace(dialog.SelectedPath))
             {
