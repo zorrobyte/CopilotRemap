@@ -12,7 +12,7 @@ public enum ActionType
     OpenUrl
 }
 
-public sealed class AppAction
+public sealed record AppAction
 {
     public ActionType Type { get; init; }
     public string Target { get; init; } = "";
