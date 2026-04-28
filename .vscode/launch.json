@@ -1,0 +1,19 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": ".NET 9 WinForms: Launch CopilotRemap",
+            "type": "coreclr",
+            "request": "launch",
+            "preLaunchTask": null,
+            "program": "${workspaceFolder}/bin/Debug/net9.0-windows/CopilotRemap.exe",
+            "args": [],
+            "cwd": "${workspaceFolder}",
+            "stopAtEntry": false,
+            "console": "internalConsole"
+        }
+    ]
+}

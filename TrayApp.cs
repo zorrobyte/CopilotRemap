@@ -73,6 +73,26 @@ public sealed class TrayApp : ApplicationContext
         var doubleTapMenu = BuildActionSubmenu("Double Tap Action", _config.DoubleTap, action => SetGestureAction("doubleTap", action));
         var holdMenu = BuildActionSubmenu("Hold Action", _config.Hold, action => SetGestureAction("hold", action));
 
+        // Add menu item for default working directory
+        var setWorkingDirItem = new ToolStripMenuItem("Set Default Working Directory...");
+        setWorkingDirItem.Click += (_, _) =>
+        {
+            if (_config == null)
+                return;
+            using var dialog = new FolderBrowserDialog
+            {
+                Description = "Select default working directory for terminal and app actions",
+                UseDescriptionForTitle = true,
+                SelectedPath = _config.WorkingDirectory ?? string.Empty
+            };
+            if (dialog.ShowDialog() == DialogResult.OK && !string.IsNullOrWhiteSpace(dialog.SelectedPath))
+            {
+                _config = _config! with { WorkingDirectory = dialog.SelectedPath };
+                SaveConfig(_config);
+                _trayIcon.ShowBalloonTip(2000, "CopilotRemap", $"Default working directory set to:\n{dialog.SelectedPath}", ToolTipIcon.Info);
+            }
+        };
+
         _trayIcon = new NotifyIcon
         {
             Icon = IconHelper.CreateTrayIcon(),
@@ -90,6 +110,7 @@ public sealed class TrayApp : ApplicationContext
                     doubleTapMenu,
                     holdMenu,
                     new ToolStripSeparator(),
+                    setWorkingDirItem,
                     _startupItem,
                     new ToolStripSeparator(),
                     new ToolStripMenuItem("Exit", null, (_, _) => Exit())
@@ -111,7 +132,14 @@ public sealed class TrayApp : ApplicationContext
 
         // Presets
         var claudeCodeItem = new ToolStripMenuItem("Claude Code (Terminal)");
-        claudeCodeItem.Click += (_, _) => onSet(AppAction.ClaudeCode());
+        claudeCodeItem.Click += (_, _) =>
+        {
+            // Use the configured working directory if present
+            var action = AppAction.ClaudeCode();
+            if (!string.IsNullOrWhiteSpace(_config.WorkingDirectory))
+                action = action with { WorkingDirectory = _config.WorkingDirectory };
+            onSet(action);
+        };
 
         var claudeDesktopItem = new ToolStripMenuItem("Claude Desktop");
         claudeDesktopItem.Click += (_, _) => onSet(AppAction.ClaudeDesktop());
@@ -129,7 +157,20 @@ public sealed class TrayApp : ApplicationContext
         customAppItem.Click += (_, _) =>
         {
             var action = PromptCustomApp();
-            if (action != null) onSet(action);
+            if (action != null)
+            {
+                // Ask if user wants to set a working directory
+                using var dialog = new FolderBrowserDialog
+                {
+                    Description = "Select working directory for this application (optional)",
+                    UseDescriptionForTitle = true
+                };
+                if (dialog.ShowDialog() == DialogResult.OK && !string.IsNullOrWhiteSpace(dialog.SelectedPath))
+                {
+                    action = action with { WorkingDirectory = dialog.SelectedPath };
+                }
+                onSet(action);
+            }
         };
 
         var customCmdItem = new ToolStripMenuItem("Custom Command...");
@@ -438,6 +479,9 @@ public sealed class TrayApp : ApplicationContext
         public AppAction? Hold { get; init; }
         public int DoubleTapDelayMs { get; init; } = 350;
         public int HoldDelayMs { get; init; } = 500;
+
+        // Optional: default working directory for Claude Code (terminal)
+        public string? WorkingDirectory { get; init; }
     }
 
     private static CopilotConfig LoadConfig()
