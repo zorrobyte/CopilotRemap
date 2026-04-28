@@ -77,15 +77,17 @@ public sealed class TrayApp : ApplicationContext
         var setWorkingDirItem = new ToolStripMenuItem("Set Default Working Directory...");
         setWorkingDirItem.Click += (_, _) =>
         {
+            if (_config == null)
+                return;
             using var dialog = new FolderBrowserDialog
             {
                 Description = "Select default working directory for terminal and app actions",
                 UseDescriptionForTitle = true,
-                SelectedPath = _config?.WorkingDirectory ?? string.Empty
+                SelectedPath = _config.WorkingDirectory ?? string.Empty
             };
             if (dialog.ShowDialog() == DialogResult.OK && !string.IsNullOrWhiteSpace(dialog.SelectedPath))
             {
-                _config = _config with { WorkingDirectory = dialog.SelectedPath };
+                _config = _config! with { WorkingDirectory = dialog.SelectedPath };
                 SaveConfig(_config);
                 _trayIcon.ShowBalloonTip(2000, "CopilotRemap", $"Default working directory set to:\n{dialog.SelectedPath}", ToolTipIcon.Info);
             }
