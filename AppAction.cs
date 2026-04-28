@@ -103,12 +103,34 @@ public sealed class AppAction
     public static AppAction ClaudeDesktop()
     {
         var appId = FindClaudeDesktopAppId();
-        return new AppAction
+        var exePath = FindClaudeDesktopExe();
+        if (appId != null)
         {
-            Type = appId != null ? ActionType.LaunchStoreApp : ActionType.LaunchApp,
-            Target = appId ?? "",
-            DisplayName = "Claude Desktop"
-        };
+            return new AppAction
+            {
+                Type = ActionType.LaunchStoreApp,
+                Target = appId,
+                DisplayName = "Claude Desktop"
+            };
+        }
+        else if (exePath != null)
+        {
+            return new AppAction
+            {
+                Type = ActionType.LaunchApp,
+                Target = exePath,
+                DisplayName = "Claude Desktop"
+            };
+        }
+        else
+        {
+            return new AppAction
+            {
+                Type = ActionType.LaunchApp,
+                Target = "",
+                DisplayName = "Claude Desktop (Not Found)"
+            };
+        }
     }
 
     public static AppAction ClaudeWeb() => new()
@@ -118,7 +140,7 @@ public sealed class AppAction
         DisplayName = "claude.ai (Browser)"
     };
 
-    public static bool IsClaudeDesktopInstalled() => FindClaudeDesktopAppId() != null;
+    public static bool IsClaudeDesktopInstalled() => FindClaudeDesktopAppId() != null || FindClaudeDesktopExe() != null;
 
     private static string? FindClaudeDesktopAppId()
     {
@@ -142,6 +164,24 @@ public sealed class AppAction
         }
         catch { }
 
+        return null;
+    }
+
+    // Looks for claude.exe in common install locations
+    private static string? FindClaudeDesktopExe()
+    {
+        try
+        {
+            // User-local install (default for Claude Desktop)
+            var userPath = System.IO.Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "AnthropicClaude", "claude.exe");
+            if (System.IO.File.Exists(userPath))
+                return userPath;
+
+            // Add more locations if needed
+        }
+        catch { }
         return null;
     }
 }
