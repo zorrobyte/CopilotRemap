@@ -71,6 +71,14 @@ public sealed class TrayApp : ApplicationContext
         };
         _startupItem.Click += (_, _) => ToggleStartup(_startupItem.Checked);
 
+        // Create the tray icon first so menu-item callbacks can safely capture it.
+        _trayIcon = new NotifyIcon
+        {
+            Icon = IconHelper.CreateTrayIcon(),
+            Text = "CopilotRemap",
+            Visible = true
+        };
+
         // Build submenus
         var tapMenu = BuildActionSubmenu("Tap Action", _config.SingleTap, action => SetGestureAction("singleTap", action));
         var doubleTapMenu = BuildActionSubmenu("Double Tap Action", _config.DoubleTap, action => SetGestureAction("doubleTap", action));
@@ -80,8 +88,6 @@ public sealed class TrayApp : ApplicationContext
         var setWorkingDirItem = new ToolStripMenuItem("Set Default Working Directory...");
         setWorkingDirItem.Click += (_, _) =>
         {
-            if (_config == null)
-                return;
             using var dialog = new FolderBrowserDialog
             {
                 Description = "Select default working directory for terminal and app actions",
@@ -90,34 +96,28 @@ public sealed class TrayApp : ApplicationContext
             };
             if (dialog.ShowDialog() == DialogResult.OK && !string.IsNullOrWhiteSpace(dialog.SelectedPath))
             {
-                _config = _config! with { WorkingDirectory = dialog.SelectedPath };
+                _config = _config with { WorkingDirectory = dialog.SelectedPath };
                 SaveConfig(_config);
                 _trayIcon.ShowBalloonTip(2000, "CopilotRemap", $"Default working directory set to:\n{dialog.SelectedPath}", ToolTipIcon.Info);
             }
         };
 
-        _trayIcon = new NotifyIcon
+        _trayIcon.ContextMenuStrip = new ContextMenuStrip
         {
-            Icon = IconHelper.CreateTrayIcon(),
-            Text = "CopilotRemap",
-            Visible = true,
-            ContextMenuStrip = new ContextMenuStrip
+            Items =
             {
-                Items =
-                {
-                    _tapLabel,
-                    _doubleTapLabel,
-                    _holdLabel,
-                    new ToolStripSeparator(),
-                    tapMenu,
-                    doubleTapMenu,
-                    holdMenu,
-                    new ToolStripSeparator(),
-                    setWorkingDirItem,
-                    _startupItem,
-                    new ToolStripSeparator(),
-                    new ToolStripMenuItem("Exit", null, (_, _) => Exit())
-                }
+                _tapLabel,
+                _doubleTapLabel,
+                _holdLabel,
+                new ToolStripSeparator(),
+                tapMenu,
+                doubleTapMenu,
+                holdMenu,
+                new ToolStripSeparator(),
+                setWorkingDirItem,
+                _startupItem,
+                new ToolStripSeparator(),
+                new ToolStripMenuItem("Exit", null, (_, _) => Exit())
             }
         };
 
