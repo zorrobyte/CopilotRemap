@@ -12,12 +12,14 @@ public enum ActionType
     OpenUrl
 }
 
-public sealed class AppAction
+public sealed record AppAction
 {
     public ActionType Type { get; init; }
     public string Target { get; init; } = "";
     public string Arguments { get; init; } = "";
     public string DisplayName { get; init; } = "";
+    // Optional working directory for RunInTerminal
+    public string? WorkingDirectory { get; init; }
 
     public void Execute()
     {
@@ -43,7 +45,7 @@ public sealed class AppAction
                 break;
 
             case ActionType.RunInTerminal:
-                LaunchInTerminal(Target, Arguments);
+                LaunchInTerminal(Target, Arguments, WorkingDirectory);
                 break;
 
             case ActionType.OpenUrl:
@@ -56,7 +58,7 @@ public sealed class AppAction
         }
     }
 
-    private static void LaunchInTerminal(string command, string args)
+    private static void LaunchInTerminal(string command, string args, string? workingDir = null)
     {
         var fullCommand = string.IsNullOrEmpty(args) ? command : $"{command} {args}";
 
@@ -71,6 +73,8 @@ public sealed class AppAction
             UseShellExecute = false,
             CreateNoWindow = true
         };
+        if (!string.IsNullOrWhiteSpace(workingDir))
+            psi.WorkingDirectory = workingDir;
         psi.Environment.Remove("CLAUDECODE");
 
         try
@@ -86,6 +90,8 @@ public sealed class AppAction
                 Arguments = $"-NoExit -Command \"& {fullCommand}\"",
                 UseShellExecute = false
             };
+            if (!string.IsNullOrWhiteSpace(workingDir))
+                fallback.WorkingDirectory = workingDir;
             fallback.Environment.Remove("CLAUDECODE");
             Process.Start(fallback);
         }
