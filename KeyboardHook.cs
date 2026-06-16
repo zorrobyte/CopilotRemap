@@ -23,9 +23,14 @@ public sealed class KeyboardHook : IDisposable
     private const int VK_LWIN = 0x5B;
     private const int VK_RWIN = 0x5C;
     private const int VK_SHIFT = 0x10;
+    private const int VK_SPACE = 0x20;
 
     public event Action? CopilotKeyDown;
     public event Action? CopilotKeyUp;
+    public event Action? CopilotSpacePressed;
+
+    private bool _copilotHeld;
+    private bool _suppressNextSpaceUp;
 
     private IntPtr _hookId;
     private readonly LowLevelKeyboardProc _proc;
@@ -83,16 +88,33 @@ public sealed class KeyboardHook : IDisposable
             {
                 if (IsCopilotKey(info))
                 {
+                    _copilotHeld = true;
                     CopilotKeyDown?.Invoke();
                     return (IntPtr)1; // Suppress the key
+                }
+
+                // Detect Space while Copilot key is held → QuickLaunch combo
+                if (info.vkCode == VK_SPACE && _copilotHeld)
+                {
+                    _suppressNextSpaceUp = true;
+                    CopilotSpacePressed?.Invoke();
+                    return (IntPtr)1; // Suppress Space
                 }
             }
             else if (wParam == WM_KEYUP || wParam == WM_SYSKEYUP)
             {
                 if (IsCopilotKeyUp(info))
                 {
+                    _copilotHeld = false;
                     CopilotKeyUp?.Invoke();
                     return (IntPtr)1; // Suppress the key
+                }
+
+                // Suppress the Space release after a combo
+                if (info.vkCode == VK_SPACE && _suppressNextSpaceUp)
+                {
+                    _suppressNextSpaceUp = false;
+                    return (IntPtr)1;
                 }
             }
         }
