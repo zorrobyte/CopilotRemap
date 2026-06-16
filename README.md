@@ -7,12 +7,16 @@ No bloated apps, no PowerToys, no AutoHotkey — just a single, tiny .NET app th
 ## Features
 
 - **Three gesture types** — single tap, double tap, and press-and-hold, each independently configurable
+- **QuickLaunch overlay** — press **Copilot + Space** for a Spotlight-style launcher: type a prompt to start a new Claude Code chat, or pick Resume / Continue / Desktop / Web
+- **Search & resume chats** — full-text search across your past Claude Code conversations and resume any one of them by session
 - **Intercepts the Copilot key** — handles both `VK_LAUNCH_APP1` and `Win+Shift+F23` key mappings used by different keyboards
 - **Built-in presets** — one-click setup for Claude Code, Claude Desktop, or claude.ai
 - **Fully customizable** — launch any application, run any terminal command, or open any URL
+- **Default working directory** — set the folder Claude Code (and other terminal commands) launches in
 - **System tray app** — runs silently in the background with a right-click menu
 - **Run at startup** — optional toggle to launch automatically when you log in
 - **Single instance** — prevents duplicate copies from running
+- **Hardened by default** — validates URLs, application paths, and commands, and rejects shell metacharacters to prevent injection
 - **Zero dependencies** — just .NET (already on Windows 11)
 
 ## Quick Start
@@ -61,15 +65,27 @@ Each gesture has its own submenu with these options:
 
 | Menu Option | What it does |
 |---|---|
-| **Claude Code (Terminal)** | Opens `claude` in Windows Terminal |
-| **Claude Desktop** | Launches the Claude Desktop app (auto-detects MSIX install) |
+| **Claude Code (Terminal)** | Opens `claude` in Windows Terminal (in your default working directory, if set) |
+| **Claude Desktop** | Launches the Claude Desktop app (auto-detects MSIX or standalone `.exe` install) |
 | **claude.ai (Browser)** | Opens claude.ai in your default browser |
+| **Search Chats** | Opens the QuickLaunch overlay to search and resume past Claude Code conversations |
 | **Custom Application...** | File picker — choose any `.exe` |
 | **Custom Command...** | Run any command in a terminal (e.g. `python`, `wsl`, `node`) |
 | **Custom URL...** | Open any URL in your default browser |
 | **None (disable)** | Disable this gesture |
 
+You can also set a **default working directory** from the tray menu (*Set Default Working Directory...*), which is applied to Claude Code and other terminal commands.
+
 4. Press the Copilot key on your keyboard — your chosen action fires based on the gesture
+
+### QuickLaunch Overlay
+
+Press **Copilot + Space** at any time to open the QuickLaunch overlay — a Spotlight-style launcher with two modes:
+
+- **Ask** — type a prompt and press **Enter** to start a new Claude Code chat with it, or choose **Continue Last Session** (`claude --continue`), **Claude Desktop**, or **claude.ai**
+- **Resume** — pick **Resume Chat…** to full-text search across your past Claude Code conversations (indexed from `~/.claude/projects/`); use the arrow keys to select and **Enter** to resume that session
+
+Press **Esc** to dismiss the overlay.
 
 ### Example Setup
 
@@ -117,6 +133,7 @@ Example config:
     "Target": "https://claude.ai",
     "DisplayName": "claude.ai (Browser)"
   },
+  "WorkingDirectory": "C:\\Projects",
   "DoubleTapDelayMs": 350,
   "HoldDelayMs": 500
 }
@@ -159,13 +176,15 @@ This produces `installer\CopilotRemap-Setup.exe`.
 
 ```
 CopilotRemap/
-├── Program.cs          Entry point, single-instance mutex
-├── TrayApp.cs          System tray icon, context menu, gesture detection, config
-├── KeyboardHook.cs     Low-level keyboard hook (Win32 P/Invoke)
-├── AppAction.cs        Action model, presets, Execute logic
-├── InputDialog.cs      Minimal text input dialog
-├── IconHelper.cs       Generates the tray icon at runtime via GDI+
-├── CopilotRemap.csproj .NET 9 WinForms project
+├── Program.cs            Entry point, single-instance mutex
+├── TrayApp.cs            System tray icon, context menu, gesture detection, config
+├── KeyboardHook.cs       Low-level keyboard hook (Win32 P/Invoke)
+├── AppAction.cs          Action model, presets, Execute logic
+├── ChatSessionScanner.cs Indexes ~/.claude/projects/ for chat search & resume
+├── QuickLaunchWindow.cs  Spotlight-style QuickLaunch / Resume overlay (Copilot+Space)
+├── InputDialog.cs        Minimal text input dialog
+├── IconHelper.cs         Generates the tray icon at runtime via GDI+
+├── CopilotRemap.csproj   .NET 9 WinForms project
 └── installer/
     └── CopilotRemap.iss     Inno Setup installer script
 ```

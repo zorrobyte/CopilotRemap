@@ -1,7 +1,7 @@
 ; CopilotRemap Inno Setup installer script
 
 #define MyAppName "CopilotRemap"
-#define MyAppVersion "1.1.0"
+#define MyAppVersion "1.2.0"
 #define MyAppPublisher "Zorrobyte"
 #define MyAppURL "https://github.com/Zorrobyte/CopilotRemap"
 #define MyAppExeName "CopilotRemap.exe"
