@@ -138,7 +138,7 @@ public static class ChatSessionScanner
         return new ChatSession(
             SessionId: sessionId,
             Project: project,
-            Slug: slug ?? sessionId[..8],
+            Slug: slug ?? (sessionId.Length >= 8 ? sessionId[..8] : sessionId),
             FirstMessage: firstUserMessage ?? "(empty conversation)",
             Cwd: cwd ?? "",
             LastModified: fileInfo.LastWriteTime,

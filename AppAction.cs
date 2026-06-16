@@ -139,20 +139,12 @@ public sealed record AppAction
         DisplayName = "Claude Code (Continue)"
     };
 
-    public static AppAction ClaudeCodeResume() => new()
-    {
-        Type = ActionType.RunInTerminal,
-        Target = "claude",
-        Arguments = "--resume",
-        DisplayName = "Claude Code (Resume)"
-    };
-
     public static AppAction ClaudeCodeResumeById(string sessionId) => new()
     {
         Type = ActionType.RunInTerminal,
         Target = "claude",
         Arguments = $"--resume {sessionId}",
-        DisplayName = $"Claude Code (Resume {sessionId[..8]})"
+        DisplayName = $"Claude Code (Resume {(sessionId.Length >= 8 ? sessionId[..8] : sessionId)})"
     };
 
     public static AppAction ClaudeDesktop()
