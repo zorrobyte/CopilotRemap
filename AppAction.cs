@@ -13,18 +13,26 @@ public enum ActionType
     SearchChats
 }
 
-public sealed class AppAction
+public sealed record AppAction
 {
     public ActionType Type { get; init; }
     public string Target { get; init; } = "";
     public string Arguments { get; init; } = "";
     public string DisplayName { get; init; } = "";
+    // Optional working directory for RunInTerminal
+    public string? WorkingDirectory { get; init; }
 
     public void Execute()
     {
+        if (string.IsNullOrWhiteSpace(Target))
+            throw new InvalidOperationException("Action target is not configured.");
+
         switch (Type)
         {
             case ActionType.LaunchApp:
+                // Validate target is a real file path, not a URL or shell command
+                if (Target.IndexOfAny(Path.GetInvalidPathChars()) >= 0)
+                    throw new InvalidOperationException($"Invalid application path: {Target}");
                 Process.Start(new ProcessStartInfo
                 {
                     FileName = Target,
@@ -34,7 +42,10 @@ public sealed class AppAction
                 break;
 
             case ActionType.LaunchStoreApp:
-                // Launch MSIX/Store apps via shell:AppsFolder\{AppUserModelId}
+                // Validate AppUserModelId format (PackageFamilyName!AppId) —
+                // reject shell metacharacters to prevent argument injection into explorer.exe
+                if (Target.IndexOfAny(InvalidCommandChars) >= 0 || Target.Contains(".."))
+                    throw new InvalidOperationException($"Invalid store app ID: {Target}");
                 Process.Start(new ProcessStartInfo
                 {
                     FileName = "explorer.exe",
@@ -44,22 +55,36 @@ public sealed class AppAction
                 break;
 
             case ActionType.RunInTerminal:
-                LaunchInTerminal(Target, Arguments);
+                LaunchInTerminal(Target, Arguments, WorkingDirectory);
                 break;
 
             case ActionType.OpenUrl:
+                if (!Uri.TryCreate(Target, UriKind.Absolute, out var uri)
+                    || (uri.Scheme != "https" && uri.Scheme != "http"))
+                    throw new InvalidOperationException($"Invalid or disallowed URL scheme: {Target}");
                 Process.Start(new ProcessStartInfo
                 {
-                    FileName = Target,
+                    FileName = uri.AbsoluteUri,
                     UseShellExecute = true
                 });
                 break;
         }
     }
 
-    private static void LaunchInTerminal(string command, string args)
+    private static readonly char[] InvalidCommandChars = ['&', '|', ';', '>', '<', '`', '$', '(', ')', '{', '}', '\n', '\r'];
+
+    private static void LaunchInTerminal(string command, string args, string? workingDir = null)
     {
-        var fullCommand = string.IsNullOrEmpty(args) ? command : $"{command} {args}";
+        // Validate command to prevent injection via cmd.exe /c or powershell -Command
+        if (string.IsNullOrWhiteSpace(command))
+            throw new ArgumentException("Command must not be empty.", nameof(command));
+
+        if (command.IndexOfAny(InvalidCommandChars) >= 0 ||
+            (!string.IsNullOrEmpty(args) && args.IndexOfAny(InvalidCommandChars) >= 0))
+            throw new ArgumentException("Command or arguments contain disallowed shell metacharacters.");
+
+        var quotedCommand = $"\"{command}\"";
+        var fullCommand = string.IsNullOrEmpty(args) ? quotedCommand : $"{quotedCommand} {args}";
 
         // wt.exe is an App Execution Alias and can't be launched directly
         // with UseShellExecute=false, but we need UseShellExecute=false to
@@ -72,6 +97,8 @@ public sealed class AppAction
             UseShellExecute = false,
             CreateNoWindow = true
         };
+        if (!string.IsNullOrWhiteSpace(workingDir))
+            psi.WorkingDirectory = workingDir;
         psi.Environment.Remove("CLAUDECODE");
 
         try
@@ -80,13 +107,16 @@ public sealed class AppAction
         }
         catch
         {
-            // Fall back to PowerShell if Windows Terminal is not available
+            // Fall back to PowerShell if Windows Terminal is not available.
+            // Use -File semantics via encoded command to avoid injection.
             var fallback = new ProcessStartInfo
             {
                 FileName = "powershell.exe",
-                Arguments = $"-NoExit -Command \"& {fullCommand}\"",
+                Arguments = $"-NoProfile -NoExit -Command \"& {fullCommand}\"",
                 UseShellExecute = false
             };
+            if (!string.IsNullOrWhiteSpace(workingDir))
+                fallback.WorkingDirectory = workingDir;
             fallback.Environment.Remove("CLAUDECODE");
             Process.Start(fallback);
         }
@@ -128,12 +158,34 @@ public sealed class AppAction
     public static AppAction ClaudeDesktop()
     {
         var appId = FindClaudeDesktopAppId();
-        return new AppAction
+        var exePath = FindClaudeDesktopExe();
+        if (appId != null)
         {
-            Type = appId != null ? ActionType.LaunchStoreApp : ActionType.LaunchApp,
-            Target = appId ?? "",
-            DisplayName = "Claude Desktop"
-        };
+            return new AppAction
+            {
+                Type = ActionType.LaunchStoreApp,
+                Target = appId,
+                DisplayName = "Claude Desktop"
+            };
+        }
+        else if (exePath != null)
+        {
+            return new AppAction
+            {
+                Type = ActionType.LaunchApp,
+                Target = exePath,
+                DisplayName = "Claude Desktop"
+            };
+        }
+        else
+        {
+            return new AppAction
+            {
+                Type = ActionType.LaunchApp,
+                Target = "",
+                DisplayName = "Claude Desktop (Not Found)"
+            };
+        }
     }
 
     public static AppAction ClaudeWeb() => new()
@@ -150,7 +202,7 @@ public sealed class AppAction
         DisplayName = "Search Chats"
     };
 
-    public static bool IsClaudeDesktopInstalled() => FindClaudeDesktopAppId() != null;
+    public static bool IsClaudeDesktopInstalled() => FindClaudeDesktopAppId() != null || FindClaudeDesktopExe() != null;
 
     private static string? FindClaudeDesktopAppId()
     {
@@ -174,6 +226,24 @@ public sealed class AppAction
         }
         catch { }
 
+        return null;
+    }
+
+    // Looks for claude.exe in common install locations
+    private static string? FindClaudeDesktopExe()
+    {
+        try
+        {
+            // User-local install (default for Claude Desktop)
+            var userPath = System.IO.Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "AnthropicClaude", "claude.exe");
+            if (System.IO.File.Exists(userPath))
+                return userPath;
+
+            // Add more locations if needed
+        }
+        catch { }
         return null;
     }
 }

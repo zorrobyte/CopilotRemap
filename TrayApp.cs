@@ -76,6 +76,26 @@ public sealed class TrayApp : ApplicationContext
         var doubleTapMenu = BuildActionSubmenu("Double Tap Action", _config.DoubleTap, action => SetGestureAction("doubleTap", action));
         var holdMenu = BuildActionSubmenu("Hold Action", _config.Hold, action => SetGestureAction("hold", action));
 
+        // Add menu item for default working directory
+        var setWorkingDirItem = new ToolStripMenuItem("Set Default Working Directory...");
+        setWorkingDirItem.Click += (_, _) =>
+        {
+            if (_config == null)
+                return;
+            using var dialog = new FolderBrowserDialog
+            {
+                Description = "Select default working directory for terminal and app actions",
+                UseDescriptionForTitle = true,
+                SelectedPath = _config.WorkingDirectory ?? string.Empty
+            };
+            if (dialog.ShowDialog() == DialogResult.OK && !string.IsNullOrWhiteSpace(dialog.SelectedPath))
+            {
+                _config = _config! with { WorkingDirectory = dialog.SelectedPath };
+                SaveConfig(_config);
+                _trayIcon.ShowBalloonTip(2000, "CopilotRemap", $"Default working directory set to:\n{dialog.SelectedPath}", ToolTipIcon.Info);
+            }
+        };
+
         _trayIcon = new NotifyIcon
         {
             Icon = IconHelper.CreateTrayIcon(),
@@ -93,6 +113,7 @@ public sealed class TrayApp : ApplicationContext
                     doubleTapMenu,
                     holdMenu,
                     new ToolStripSeparator(),
+                    setWorkingDirItem,
                     _startupItem,
                     new ToolStripSeparator(),
                     new ToolStripMenuItem("Exit", null, (_, _) => Exit())
@@ -115,7 +136,14 @@ public sealed class TrayApp : ApplicationContext
 
         // Presets
         var claudeCodeItem = new ToolStripMenuItem("Claude Code (Terminal)");
-        claudeCodeItem.Click += (_, _) => onSet(AppAction.ClaudeCode());
+        claudeCodeItem.Click += (_, _) =>
+        {
+            // Use the configured working directory if present
+            var action = AppAction.ClaudeCode();
+            if (!string.IsNullOrWhiteSpace(_config.WorkingDirectory))
+                action = action with { WorkingDirectory = _config.WorkingDirectory };
+            onSet(action);
+        };
 
         var claudeDesktopItem = new ToolStripMenuItem("Claude Desktop");
         claudeDesktopItem.Click += (_, _) => onSet(AppAction.ClaudeDesktop());
@@ -141,7 +169,20 @@ public sealed class TrayApp : ApplicationContext
         customAppItem.Click += (_, _) =>
         {
             var action = PromptCustomApp();
-            if (action != null) onSet(action);
+            if (action != null)
+            {
+                // Ask if user wants to set a working directory
+                using var dialog = new FolderBrowserDialog
+                {
+                    Description = "Select working directory for this application (optional)",
+                    UseDescriptionForTitle = true
+                };
+                if (dialog.ShowDialog() == DialogResult.OK && !string.IsNullOrWhiteSpace(dialog.SelectedPath))
+                {
+                    action = action with { WorkingDirectory = dialog.SelectedPath };
+                }
+                onSet(action);
+            }
         };
 
         var customCmdItem = new ToolStripMenuItem("Custom Command...");
@@ -266,6 +307,8 @@ public sealed class TrayApp : ApplicationContext
         };
     }
 
+    private static readonly char[] DisallowedCommandChars = ['&', '|', ';', '>', '<', '`', '$', '(', ')', '{', '}', '\n', '\r'];
+
     private static AppAction? PromptCustomCommand()
     {
         using var dialog = new InputDialog(
@@ -275,11 +318,20 @@ public sealed class TrayApp : ApplicationContext
 
         if (dialog.ShowDialog() != DialogResult.OK || string.IsNullOrWhiteSpace(dialog.Value)) return null;
 
+        var command = dialog.Value.Trim();
+
+        if (command.IndexOfAny(DisallowedCommandChars) >= 0)
+        {
+            MessageBox.Show("Command contains disallowed characters (&, |, ;, >, <, etc.).",
+                "Invalid Command", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return null;
+        }
+
         return new AppAction
         {
             Type = ActionType.RunInTerminal,
-            Target = dialog.Value.Trim(),
-            DisplayName = $"{dialog.Value.Trim()} (Terminal)"
+            Target = command,
+            DisplayName = $"{command} (Terminal)"
         };
     }
 
@@ -287,17 +339,26 @@ public sealed class TrayApp : ApplicationContext
     {
         using var dialog = new InputDialog(
             "Custom URL",
-            "URL to open in browser:",
+            "URL to open in browser (https:// only):",
             "https://");
 
         if (dialog.ShowDialog() != DialogResult.OK || string.IsNullOrWhiteSpace(dialog.Value)) return null;
 
         var url = dialog.Value.Trim();
+
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var parsedUri)
+            || (parsedUri.Scheme != "https" && parsedUri.Scheme != "http"))
+        {
+            MessageBox.Show("Only http:// and https:// URLs are allowed.",
+                "Invalid URL", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return null;
+        }
+
         return new AppAction
         {
             Type = ActionType.OpenUrl,
-            Target = url,
-            DisplayName = new Uri(url).Host
+            Target = parsedUri.AbsoluteUri,
+            DisplayName = parsedUri.Host
         };
     }
 
@@ -569,25 +630,29 @@ public sealed class TrayApp : ApplicationContext
 
     private static void CreateShortcut(string shortcutPath, string targetPath, string arguments)
     {
-        var script = Path.Combine(Path.GetTempPath(), "CopilotRemap_mklink.ps1");
-        File.WriteAllText(script,
-            $"$ws = New-Object -ComObject WScript.Shell\n" +
-            $"$s = $ws.CreateShortcut('{shortcutPath.Replace("'", "''")}')\n" +
-            $"$s.TargetPath = '{targetPath.Replace("'", "''")}'\n" +
-            $"$s.Arguments = '{arguments.Replace("'", "''")}'\n" +
-            $"$s.Save()\n");
+        // Use -Command with properly escaped parameters instead of writing a temp script file.
+        // This avoids TOCTOU race conditions on the temp file and reduces injection surface.
+        var psCommand =
+            "$ws = New-Object -ComObject WScript.Shell; " +
+            $"$s = $ws.CreateShortcut([System.Management.Automation.WildcardPattern]::Escape('{EscapePowerShellString(shortcutPath)}')); " +
+            $"$s.TargetPath = '{EscapePowerShellString(targetPath)}'; " +
+            $"$s.Arguments = '{EscapePowerShellString(arguments)}'; " +
+            "$s.Save()";
 
         var proc = Process.Start(new ProcessStartInfo
         {
             FileName = "powershell.exe",
-            Arguments = $"-NoProfile -ExecutionPolicy Bypass -File \"{script}\"",
+            Arguments = $"-NoProfile -ExecutionPolicy Bypass -Command \"{psCommand.Replace("\"", "\\\"")}\"",
             CreateNoWindow = true,
             UseShellExecute = false
         });
         proc?.WaitForExit();
-
-        try { File.Delete(script); } catch { }
     }
+
+    /// <summary>
+    /// Escapes a string for safe inclusion in a PowerShell single-quoted string.
+    /// </summary>
+    private static string EscapePowerShellString(string value) => value.Replace("'", "''");
 
     // --- Config persistence ---
 
@@ -598,6 +663,9 @@ public sealed class TrayApp : ApplicationContext
         public AppAction? Hold { get; init; }
         public int DoubleTapDelayMs { get; init; } = 350;
         public int HoldDelayMs { get; init; } = 500;
+
+        // Optional: default working directory for Claude Code (terminal)
+        public string? WorkingDirectory { get; init; }
     }
 
     private static CopilotConfig LoadConfig()
