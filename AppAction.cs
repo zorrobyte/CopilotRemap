@@ -12,12 +12,14 @@ public enum ActionType
     OpenUrl
 }
 
-public sealed class AppAction
+public sealed record AppAction
 {
     public ActionType Type { get; init; }
     public string Target { get; init; } = "";
     public string Arguments { get; init; } = "";
     public string DisplayName { get; init; } = "";
+    // Optional working directory for RunInTerminal
+    public string? WorkingDirectory { get; init; }
 
     public void Execute()
     {
@@ -52,7 +54,7 @@ public sealed class AppAction
                 break;
 
             case ActionType.RunInTerminal:
-                LaunchInTerminal(Target, Arguments);
+                LaunchInTerminal(Target, Arguments, WorkingDirectory);
                 break;
 
             case ActionType.OpenUrl:
@@ -70,7 +72,7 @@ public sealed class AppAction
 
     private static readonly char[] InvalidCommandChars = ['&', '|', ';', '>', '<', '`', '$', '(', ')', '{', '}', '\n', '\r'];
 
-    private static void LaunchInTerminal(string command, string args)
+    private static void LaunchInTerminal(string command, string args, string? workingDir = null)
     {
         // Validate command to prevent injection via cmd.exe /c or powershell -Command
         if (string.IsNullOrWhiteSpace(command))
@@ -94,6 +96,8 @@ public sealed class AppAction
             UseShellExecute = false,
             CreateNoWindow = true
         };
+        if (!string.IsNullOrWhiteSpace(workingDir))
+            psi.WorkingDirectory = workingDir;
         psi.Environment.Remove("CLAUDECODE");
 
         try
@@ -110,6 +114,8 @@ public sealed class AppAction
                 Arguments = $"-NoProfile -NoExit -Command \"& {fullCommand}\"",
                 UseShellExecute = false
             };
+            if (!string.IsNullOrWhiteSpace(workingDir))
+                fallback.WorkingDirectory = workingDir;
             fallback.Environment.Remove("CLAUDECODE");
             Process.Start(fallback);
         }
@@ -127,12 +133,34 @@ public sealed class AppAction
     public static AppAction ClaudeDesktop()
     {
         var appId = FindClaudeDesktopAppId();
-        return new AppAction
+        var exePath = FindClaudeDesktopExe();
+        if (appId != null)
         {
-            Type = appId != null ? ActionType.LaunchStoreApp : ActionType.LaunchApp,
-            Target = appId ?? "",
-            DisplayName = "Claude Desktop"
-        };
+            return new AppAction
+            {
+                Type = ActionType.LaunchStoreApp,
+                Target = appId,
+                DisplayName = "Claude Desktop"
+            };
+        }
+        else if (exePath != null)
+        {
+            return new AppAction
+            {
+                Type = ActionType.LaunchApp,
+                Target = exePath,
+                DisplayName = "Claude Desktop"
+            };
+        }
+        else
+        {
+            return new AppAction
+            {
+                Type = ActionType.LaunchApp,
+                Target = "",
+                DisplayName = "Claude Desktop (Not Found)"
+            };
+        }
     }
 
     public static AppAction ClaudeWeb() => new()
@@ -142,7 +170,7 @@ public sealed class AppAction
         DisplayName = "claude.ai (Browser)"
     };
 
-    public static bool IsClaudeDesktopInstalled() => FindClaudeDesktopAppId() != null;
+    public static bool IsClaudeDesktopInstalled() => FindClaudeDesktopAppId() != null || FindClaudeDesktopExe() != null;
 
     private static string? FindClaudeDesktopAppId()
     {
@@ -166,6 +194,24 @@ public sealed class AppAction
         }
         catch { }
 
+        return null;
+    }
+
+    // Looks for claude.exe in common install locations
+    private static string? FindClaudeDesktopExe()
+    {
+        try
+        {
+            // User-local install (default for Claude Desktop)
+            var userPath = System.IO.Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "AnthropicClaude", "claude.exe");
+            if (System.IO.File.Exists(userPath))
+                return userPath;
+
+            // Add more locations if needed
+        }
+        catch { }
         return null;
     }
 }
