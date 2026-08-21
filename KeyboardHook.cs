@@ -84,6 +84,11 @@ public sealed class KeyboardHook : IDisposable
         {
             var info = Marshal.PtrToStructure<KBDLLHOOKSTRUCT>(lParam);
 
+            // Ignore synthetic events we generated ourselves (e.g. Keystroke actions
+            // sent via KeySender) so they can never be mistaken for the Copilot key.
+            if (info.dwExtraInfo == (IntPtr)KeySender.SyntheticInputMarker)
+                return CallNextHookEx(_hookId, nCode, wParam, lParam);
+
             if (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN)
             {
                 if (IsCopilotKey(info))

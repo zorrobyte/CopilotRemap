@@ -11,7 +11,8 @@ No bloated apps, no PowerToys, no AutoHotkey — just a single, tiny .NET app th
 - **Search & resume chats** — full-text search across your past Claude Code conversations and resume any one of them by session
 - **Intercepts the Copilot key** — handles both `VK_LAUNCH_APP1` and `Win+Shift+F23` key mappings used by different keyboards
 - **Built-in presets** — one-click setup for Claude Code, Claude Desktop, or claude.ai
-- **Fully customizable** — launch any application, run any terminal command, or open any URL
+- **Fully customizable** — launch any application, run any terminal command, open any URL, or send any keystroke combination
+- **Synthetic keystrokes** — assign any key combo (e.g. Ctrl+C, Alt+F4, Win+D) to a gesture; record it by pressing the keys, no typing required
 - **Default working directory** — set the folder Claude Code (and other terminal commands) launches in
 - **System tray app** — runs silently in the background with a right-click menu
 - **Run at startup** — optional toggle to launch automatically when you log in
@@ -72,6 +73,7 @@ Each gesture has its own submenu with these options:
 | **Custom Application...** | File picker — choose any `.exe` |
 | **Custom Command...** | Run any command in a terminal (e.g. `python`, `wsl`, `node`) |
 | **Custom URL...** | Open any URL in your default browser |
+| **Custom Keystroke...** | Press-to-record dialog — captures any key combo and sends it via SendInput |
 | **None (disable)** | Disable this gesture |
 
 You can also set a **default working directory** from the tray menu (*Set Default Working Directory...*), which is applied to Claude Code and other terminal commands.
@@ -141,6 +143,8 @@ Example config:
 
 Old single-action configs are automatically migrated to the `SingleTap` gesture.
 
+Keystroke actions store the combo as plain text (e.g. `"Target": "Ctrl+Shift+C"`), captured via the "Custom Keystroke..." recorder — no manual editing needed.
+
 ## Building from Source
 
 ### Requirements
@@ -183,6 +187,9 @@ CopilotRemap/
 ├── ChatSessionScanner.cs Indexes ~/.claude/projects/ for chat search & resume
 ├── QuickLaunchWindow.cs  Spotlight-style QuickLaunch / Resume overlay (Copilot+Space)
 ├── InputDialog.cs        Minimal text input dialog
+├── KeystrokeCombo.cs     Keystroke combo model, serialization, pretty formatting
+├── KeySender.cs          SendInput wrapper for synthetic key events
+├── KeystrokeCaptureDialog.cs  Press-to-record dialog for capturing a key combo
 ├── IconHelper.cs         Generates the tray icon at runtime via GDI+
 ├── CopilotRemap.csproj   .NET 9 WinForms project
 └── installer/
