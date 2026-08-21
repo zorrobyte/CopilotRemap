@@ -10,7 +10,8 @@ public enum ActionType
     LaunchStoreApp,
     RunInTerminal,
     OpenUrl,
-    SearchChats
+    SearchChats,
+    Keystroke
 }
 
 public sealed record AppAction
@@ -67,6 +68,12 @@ public sealed record AppAction
                     FileName = uri.AbsoluteUri,
                     UseShellExecute = true
                 });
+                break;
+
+            case ActionType.Keystroke:
+                if (!KeystrokeCombo.TryParse(Target, out var combo))
+                    throw new InvalidOperationException($"Invalid keystroke combo: {Target}");
+                KeySender.Send(combo);
                 break;
         }
     }

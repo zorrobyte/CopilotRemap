@@ -28,6 +28,13 @@ public sealed class TrayApp : ApplicationContext
 
 
 
+    // Highlight color for the currently assigned action — matches the tray icon (IconHelper).
+    private static readonly Color AccentColor = Color.FromArgb(79, 70, 229); // indigo-600
+
+    private const string TapPrefix = "Tap:    ";
+    private const string DoubleTapPrefix = "2x Tap: ";
+    private const string HoldPrefix = "Hold:   ";
+
     private static readonly string ConfigDir = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "CopilotRemap");
     private static readonly string ConfigFile = Path.Combine(ConfigDir, "config.json");
@@ -56,13 +63,13 @@ public sealed class TrayApp : ApplicationContext
             }
         };
 
-        // Header labels
-        _tapLabel = new ToolStripMenuItem($"Tap:    {_config.SingleTap?.DisplayName ?? "(none)"}")
-            { Enabled = false, Font = new Font(SystemFonts.MenuFont!, FontStyle.Bold) };
-        _doubleTapLabel = new ToolStripMenuItem($"2x Tap: {_config.DoubleTap?.DisplayName ?? "(none)"}")
-            { Enabled = false, Font = new Font(SystemFonts.MenuFont!, FontStyle.Bold) };
-        _holdLabel = new ToolStripMenuItem($"Hold:   {_config.Hold?.DisplayName ?? "(none)"}")
-            { Enabled = false, Font = new Font(SystemFonts.MenuFont!, FontStyle.Bold) };
+        // Header labels — an assigned action shows highlighted, "(none)" stays greyed.
+        _tapLabel = NewGestureLabel();
+        _doubleTapLabel = NewGestureLabel();
+        _holdLabel = NewGestureLabel();
+        SetGestureLabel(_tapLabel, TapPrefix, _config.SingleTap);
+        SetGestureLabel(_doubleTapLabel, DoubleTapPrefix, _config.DoubleTap);
+        SetGestureLabel(_holdLabel, HoldPrefix, _config.Hold);
 
         _startupItem = new ToolStripMenuItem("Run at Startup")
         {
@@ -104,6 +111,7 @@ public sealed class TrayApp : ApplicationContext
 
         _trayIcon.ContextMenuStrip = new ContextMenuStrip
         {
+            Renderer = new AccentRenderer(),
             Items =
             {
                 _tapLabel,
@@ -126,6 +134,38 @@ public sealed class TrayApp : ApplicationContext
         _hook.CopilotKeyUp += OnCopilotKeyUp;
         _hook.CopilotSpacePressed += OnCopilotSpacePressed;
         _hook.Install();
+    }
+
+    // --- Gesture header labels ---
+
+    private static ToolStripMenuItem NewGestureLabel() => new()
+    {
+        Enabled = false,
+        Font = new Font(SystemFonts.MenuFont!, FontStyle.Bold)
+    };
+
+    private static void SetGestureLabel(ToolStripMenuItem label, string prefix, AppAction? action)
+    {
+        label.Text = $"{prefix}{action?.DisplayName ?? "(none)"}";
+        label.ForeColor = action != null ? AccentColor : SystemColors.GrayText;
+    }
+
+    /// <summary>
+    /// The stock renderer forces every disabled item's text to grey, which would wash out
+    /// the bold header labels. This repaints just those (identified by the accent ForeColor)
+    /// so the current assignment stays highlighted; everything else renders as usual.
+    /// </summary>
+    private sealed class AccentRenderer : ToolStripProfessionalRenderer
+    {
+        protected override void OnRenderItemText(ToolStripItemTextRenderEventArgs e)
+        {
+            if (!e.Item.Enabled && e.Item.ForeColor == AccentColor)
+            {
+                TextRenderer.DrawText(e.Graphics, e.Text ?? "", e.TextFont, e.TextRectangle, AccentColor, e.TextFormat);
+                return;
+            }
+            base.OnRenderItemText(e);
+        }
     }
 
     // --- Submenu builder ---
@@ -199,18 +239,32 @@ public sealed class TrayApp : ApplicationContext
             if (action != null) onSet(action);
         };
 
+        var customKeystrokeItem = new ToolStripMenuItem("Custom Keystroke...");
+        customKeystrokeItem.Click += (_, _) =>
+        {
+            var action = PromptCustomKeystroke();
+            if (action != null) onSet(action);
+        };
+
         var noneItem = new ToolStripMenuItem("None (disable)");
         noneItem.Click += (_, _) => onSet(null);
 
         // Checkmarks
         var presets = new[] { claudeCodeItem, claudeDesktopItem, claudeWebItem, searchChatsItem };
-        SetCheckmark(presets, noneItem, current);
+        var customs = new (ToolStripMenuItem Item, ActionType[] Types)[]
+        {
+            (customAppItem, [ActionType.LaunchApp, ActionType.LaunchStoreApp]),
+            (customCmdItem, [ActionType.RunInTerminal]),
+            (customUrlItem, [ActionType.OpenUrl]),
+            (customKeystrokeItem, [ActionType.Keystroke]),
+        };
+        SetCheckmark(presets, customs, noneItem, current);
 
         menu.DropDownItems.AddRange(new ToolStripItem[]
         {
             claudeCodeItem, claudeDesktopItem, claudeWebItem, searchChatsItem,
             new ToolStripSeparator(),
-            customAppItem, customCmdItem, customUrlItem,
+            customAppItem, customCmdItem, customUrlItem, customKeystrokeItem,
             new ToolStripSeparator(),
             noneItem
         });
@@ -218,9 +272,14 @@ public sealed class TrayApp : ApplicationContext
         return menu;
     }
 
-    private static void SetCheckmark(ToolStripMenuItem[] presets, ToolStripMenuItem noneItem, AppAction? current)
+    private static void SetCheckmark(
+        ToolStripMenuItem[] presets,
+        (ToolStripMenuItem Item, ActionType[] Types)[] customs,
+        ToolStripMenuItem noneItem,
+        AppAction? current)
     {
         foreach (var p in presets) p.Checked = false;
+        foreach (var c in customs) c.Item.Checked = false;
         noneItem.Checked = false;
 
         if (current == null)
@@ -232,7 +291,21 @@ public sealed class TrayApp : ApplicationContext
         var match = presets.FirstOrDefault(p =>
             (p.Text ?? "").Replace(" (not found)", "") == current.DisplayName);
         if (match != null)
+        {
             match.Checked = true;
+            match.ForeColor = AccentColor;
+            return;
+        }
+
+        // Not a preset, so it's a custom action. Check the matching "Custom ..." entry
+        // and append what it's set to — the generic label alone doesn't say.
+        var custom = customs.FirstOrDefault(c => c.Types.Contains(current.Type));
+        if (custom.Item != null)
+        {
+            custom.Item.Checked = true;
+            custom.Item.ForeColor = AccentColor;
+            custom.Item.Text += $"  ({current.DisplayName})";
+        }
     }
 
     // --- Set gesture action ---
@@ -243,15 +316,15 @@ public sealed class TrayApp : ApplicationContext
         {
             case "singleTap":
                 _config = _config with { SingleTap = action };
-                _tapLabel.Text = $"Tap:    {action?.DisplayName ?? "(none)"}";
+                SetGestureLabel(_tapLabel, TapPrefix, action);
                 break;
             case "doubleTap":
                 _config = _config with { DoubleTap = action };
-                _doubleTapLabel.Text = $"2x Tap: {action?.DisplayName ?? "(none)"}";
+                SetGestureLabel(_doubleTapLabel, DoubleTapPrefix, action);
                 break;
             case "hold":
                 _config = _config with { Hold = action };
-                _holdLabel.Text = $"Hold:   {action?.DisplayName ?? "(none)"}";
+                SetGestureLabel(_holdLabel, HoldPrefix, action);
                 break;
         }
 
@@ -359,6 +432,19 @@ public sealed class TrayApp : ApplicationContext
             Type = ActionType.OpenUrl,
             Target = parsedUri.AbsoluteUri,
             DisplayName = parsedUri.Host
+        };
+    }
+
+    private static AppAction? PromptCustomKeystroke()
+    {
+        using var dialog = new KeystrokeCaptureDialog();
+        if (dialog.ShowDialog() != DialogResult.OK || dialog.Combo is not { } combo) return null;
+
+        return new AppAction
+        {
+            Type = ActionType.Keystroke,
+            Target = combo.Serialize(),
+            DisplayName = combo.ToDisplayString()
         };
     }
 
